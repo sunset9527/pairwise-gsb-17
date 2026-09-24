@@ -313,6 +313,132 @@ test('preserve characters', t => {
 	});
 });
 
+test('preserved characters are protected from transliteration and replacements', t => {
+	// `€` is normally transliterated to `e`.
+	t.is(slugify('€5'), 'e5');
+	t.is(slugify('€5', {preserveCharacters: ['€']}), '€5');
+
+	// Neither the built-in replacements nor `customReplacements` apply to preserved characters.
+	t.is(slugify('a&b', {preserveCharacters: ['&']}), 'a&b');
+	t.is(slugify('a&b', {preserveCharacters: ['&'], customReplacements: [['&', ' and ']]}), 'a&b');
+
+	// Preserved characters are not lowercased.
+	t.is(slugify('aÀb', {preserveCharacters: ['À']}), 'aÀb');
+
+	// A preserved backslash is not removed.
+	t.is(slugify(String.raw`a\b`, {preserveCharacters: [String.fromCodePoint(0x5C)]}), String.raw`a\b`);
+
+	// Preserved characters act as opaque atoms and do not take part in decamelize word boundaries.
+	t.is(slugify('fooBar#bazQux', {preserveCharacters: ['#']}), 'foo-bar#baz-qux');
+
+	// A private-use code point in the input does not collide with the internal placeholders.
+	t.is(slugify('a\uE000b#c', {preserveCharacters: ['#']}), 'a-b#c');
+});
+
+test('preserved characters handle surrogate pairs and multi-character entries', t => {
+	// An emoji preserved as a whole surrogate pair, overriding the built-in `🦄` replacement.
+	t.is(slugify('a🦄b', {preserveCharacters: ['🦄']}), 'a🦄b');
+	t.is(slugify('🦄🦄', {preserveCharacters: ['🦄']}), '🦄🦄');
+
+	// A slug consisting only of preserved characters is returned as-is.
+	t.is(slugify('###', {preserveCharacters: ['#']}), '###');
+
+	// Longer entries are masked before shorter overlapping ones.
+	t.is(slugify('a##b#c', {preserveCharacters: ['##', '#']}), 'a##b#c');
+});
+
+test('preprocess hooks', t => {
+	t.is(slugify('  Hello   World  ', {
+		preprocess: string => string.trim().replaceAll(/\s+/g, ' '),
+	}), 'hello-world');
+
+	// Hooks run in array order, each receiving the output of the previous one.
+	t.is(slugify('foo', {
+		preprocess: [
+			string => string + 'bar',
+			string => string.toUpperCase(),
+		],
+	}), 'foobar');
+
+	// Hooks run before transliteration and custom replacements.
+	t.is(slugify('foo', {
+		preprocess: string => string.replaceAll('o', 'ø'),
+	}), 'foo');
+	t.is(slugify('&', {
+		preprocess: string => string.replaceAll('&', '@'),
+		customReplacements: [['@', ' at ']],
+	}), 'at');
+
+	t.throws(() => {
+		slugify('foo', {preprocess: 'not-a-function'});
+	}, {instanceOf: TypeError});
+	t.throws(() => {
+		slugify('foo', {preprocess: [() => 'foo', 42]});
+	}, {instanceOf: TypeError});
+	t.throws(() => {
+		slugify('foo', {preprocess: () => 42});
+	}, {instanceOf: TypeError});
+});
+
+test('postprocess hooks', t => {
+	t.is(slugify('foo bar', {
+		postprocess: string => string.toUpperCase(),
+	}), 'FOO-BAR');
+
+	// Hooks run in array order, each receiving the output of the previous one.
+	t.is(slugify('foo', {
+		postprocess: [
+			string => string + '-bar',
+			string => `[${string}]`,
+		],
+	}), '[foo-bar]');
+
+	// Hooks run on the final slug, after the leading underscore and trailing dash are applied.
+	t.is(slugify('_foo-', {
+		preserveLeadingUnderscore: true,
+		preserveTrailingDash: true,
+		postprocess: string => `[${string}]`,
+	}), '[_foo-]');
+
+	// Hooks also run on an empty slug, so they can provide a fallback.
+	t.is(slugify('', {postprocess: slug => slug || 'untitled'}), 'untitled');
+	t.is(slugify('🔥🔥🔥', {postprocess: slug => slug || 'untitled'}), 'untitled');
+
+	t.throws(() => {
+		slugify('foo', {postprocess: 'not-a-function'});
+	}, {instanceOf: TypeError});
+	t.throws(() => {
+		slugify('foo', {postprocess: () => undefined});
+	}, {instanceOf: TypeError});
+});
+
+test('extension points compose with a clear priority', t => {
+	// `preprocess` → `preserveCharacters` → `customReplacements` → transliteration → `postprocess`.
+	t.is(slugify('  I ♥ €  ', {
+		preprocess: string => string.trim(),
+		preserveCharacters: ['€'],
+		customReplacements: [['♥', ' adore ']],
+		postprocess: slug => slug.replaceAll('-', '_'),
+	}), 'i_adore_€');
+});
+
+test('edge cases', t => {
+	// Empty string.
+	t.is(slugify(''), '');
+	t.is(slugify('   '), '');
+
+	// Pure emoji: known emoji use the built-in replacements, unknown ones produce an empty slug.
+	t.is(slugify('🦄🦄'), 'unicorn-unicorn');
+	t.is(slugify('😀😀'), '');
+
+	// Combining characters are transliterated like their precomposed equivalents.
+	t.is(slugify('Cafe\u0301'), 'cafe');
+	t.is(slugify('é'), 'e');
+
+	// Emoji are symbols rather than letters, so they are replaced by the separator even when transliteration is disabled.
+	t.is(slugify('a😀b', {transliterate: false}), 'a-b');
+});
+
 test('locale option', t => {
 	// Locale-specific transliteration
 	t.is(slugify('Räksmörgås'), 'raeksmoergas');

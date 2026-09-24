@@ -2,6 +2,10 @@ import escapeStringRegexp from 'escape-string-regexp';
 import transliterate from '@sindresorhus/transliterate';
 import builtinOverridableReplacements from './overridable-replacements.js';
 
+// Placeholders for preserved characters are allocated from the Unicode private use area, as those code points pass through transliteration, decamelization, and lowercasing untouched and cannot be produced by any of them.
+const PRIVATE_USE_AREA_START = 0xE0_00;
+const PRIVATE_USE_AREA_END = 0xF8_FF;
+
 const decamelize = string => string
 	// Separate capitalized words.
 	// Each pattern captures the least leading context it needs, as a greedy quantifier there causes quadratic backtracking on long runs of the same character class.
@@ -29,6 +33,65 @@ const removeCounterSuffix = string => {
 	}
 
 	return parts.join('-');
+};
+
+// Swap preserved characters for private-use placeholders so they pass through transliteration, custom replacements, decamelization, and lowercasing exactly as they are. Longer entries are masked first so that overlapping entries behave deterministically.
+const maskPreservedCharacters = (string, preserveCharacters) => {
+	const placeholders = new Map();
+	let codePoint = PRIVATE_USE_AREA_START;
+
+	for (const character of [...new Set(preserveCharacters)].sort((a, b) => b.length - a.length)) {
+		let placeholder;
+		do {
+			if (codePoint > PRIVATE_USE_AREA_END) {
+				throw new Error(`Too many preserved characters: ran out of placeholder code points for ${preserveCharacters}`);
+			}
+
+			placeholder = String.fromCodePoint(codePoint);
+			codePoint++;
+		} while (string.includes(placeholder) || placeholders.has(placeholder));
+
+		placeholders.set(placeholder, character);
+		string = string.replaceAll(character, placeholder);
+	}
+
+	return {string, placeholders};
+};
+
+const unmaskPreservedCharacters = (string, placeholders) => {
+	for (const [placeholder, character] of placeholders) {
+		string = string.replaceAll(placeholder, character);
+	}
+
+	return string;
+};
+
+const normalizeHooks = (hooks, optionName) => {
+	if (hooks === undefined) {
+		return [];
+	}
+
+	const hookArray = Array.isArray(hooks) ? hooks : [hooks];
+
+	for (const hook of hookArray) {
+		if (typeof hook !== 'function') {
+			throw new TypeError(`Expected the \`${optionName}\` option to be a function or an array of functions, got \`${typeof hook}\``);
+		}
+	}
+
+	return hookArray;
+};
+
+const applyHooks = (hooks, string, optionName) => {
+	for (const hook of hooks) {
+		string = hook(string);
+
+		if (typeof string !== 'string') {
+			throw new TypeError(`Expected a \`${optionName}\` hook to return a string, got \`${typeof string}\``);
+		}
+	}
+
+	return string;
 };
 
 const buildPatternSlug = options => {
@@ -71,8 +134,17 @@ export default function slugify(string, options) {
 		...options,
 	};
 
+	const preprocessHooks = normalizeHooks(options.preprocess, 'preprocess');
+	const postprocessHooks = normalizeHooks(options.postprocess, 'postprocess');
+
+	string = applyHooks(preprocessHooks, string, 'preprocess');
+
 	const shouldPrependUnderscore = options.preserveLeadingUnderscore && string.startsWith('_');
 	const shouldAppendDash = options.preserveTrailingDash && string.endsWith('-');
+
+	// Mask the preserved characters before anything can rewrite them, so they reach the slug exactly as they appeared in the input.
+	const masked = maskPreservedCharacters(string, options.preserveCharacters);
+	string = masked.string;
 
 	if (options.transliterate) {
 		const customReplacements = new Map([
@@ -98,6 +170,9 @@ export default function slugify(string, options) {
 		string = options.locale ? string.toLocaleLowerCase(options.locale) : string.toLowerCase();
 	}
 
+	// Restore the preserved characters before contraction collapsing and stripping, both of which need to see the actual characters.
+	string = unmaskPreservedCharacters(string, masked.placeholders);
+
 	// Drop the apostrophe from contractions and possessives so that `Conway's Law` becomes `conways-law` rather than `conway-s-law`. Only a word-final `'t` or `'s` qualifies, so `foo'sbar` is left alone, and both straight and curly apostrophes are handled. What counts as a word character has to be what survives into the slug, so it widens to Unicode alongside `buildPatternSlug` when transliteration is disabled. The `i` flag covers `DON'T` when the `lowercase` option is disabled.
 	const contractionPattern = options.transliterate
 		? /([a-z\d])['\u2019]([ts])(?![a-z\d])/gi
@@ -106,7 +181,11 @@ export default function slugify(string, options) {
 	string = string.replaceAll(contractionPattern, '$1$2');
 
 	string = string.replace(patternSlug, options.separator);
-	string = string.replaceAll('\\', '');
+
+	// A preserved backslash survives the stripping above, so it must not be removed here either.
+	if (!options.preserveCharacters.includes('\\')) {
+		string = string.replaceAll('\\', '');
+	}
 
 	if (options.separator) {
 		string = removeMootSeparators(string, options.separator);
@@ -119,6 +198,8 @@ export default function slugify(string, options) {
 	if (shouldAppendDash) {
 		string = `${string}-`;
 	}
+
+	string = applyHooks(postprocessHooks, string, 'postprocess');
 
 	return string;
 }

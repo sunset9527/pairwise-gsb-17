@@ -47,6 +47,55 @@ String to slugify.
 
 Type: `object`
 
+The transformation pipeline runs in a fixed order, so composing the options below is unambiguous:
+
+1. `preprocess` hooks, in array order.
+2. `preserveCharacters` masking. Preserved characters are protected from every later step except contraction collapsing and are restored before the slug is assembled.
+3. `customReplacements`, which override the built-in replacements and the transliteration map on matching keys.
+4. Transliteration (unless `transliterate` is `false`).
+5. `decamelize`, `lowercase`, and contraction collapsing.
+6. Disallowed characters are replaced by `separator` and moot separators are removed.
+7. `preserveLeadingUnderscore` and `preserveTrailingDash`.
+8. `postprocess` hooks, in array order.
+
+##### preprocess
+
+Type: `Function | Function[]`\
+Default: `[]`
+
+Transform the input string before anything else runs.
+
+Accepts a single function or an array of functions, which are applied in order. Each function receives the string produced by the previous one and must return a string.
+
+```js
+import slugify from '@sindresorhus/slugify';
+
+slugify('  Hello   World  ', {
+	preprocess: string => string.trim().replaceAll(/\s+/g, ' ')
+});
+//=> 'hello-world'
+```
+
+##### postprocess
+
+Type: `Function | Function[]`\
+Default: `[]`
+
+Transform the final slug after everything else has run.
+
+Accepts a single function or an array of functions, which are applied in order. Each function receives the string produced by the previous one and must return a string.
+
+The hooks also run when the slug is empty, so they can be used to provide a fallback.
+
+```js
+import slugify from '@sindresorhus/slugify';
+
+slugify('🔥🔥🔥', {
+	postprocess: slug => slug || 'untitled'
+});
+//=> 'untitled'
+```
+
 ##### separator
 
 Type: `string`\
@@ -197,6 +246,8 @@ Default: `[]`
 Preserve certain characters.
 
 It cannot contain the `separator`.
+
+Preserved characters pass through the whole pipeline exactly as they are: they are not transliterated, not rewritten by `customReplacements`, not decamelized, and not lowercased. They act as opaque atoms, so they also do not take part in decamelize word boundaries.
 
 The apostrophe in a word-final `'s` or `'t` is still dropped, even if you preserve `'`.
 

@@ -1,5 +1,47 @@
 export type Options = {
 	/**
+	Transform the input string before anything else runs.
+
+	Accepts a single function or an array of functions, which are applied in order. Each function receives the string produced by the previous one and must return a string.
+
+	The hooks run on the raw input, before `preserveCharacters` masking, `customReplacements`, and transliteration.
+
+	@default []
+
+	@example
+	```
+	import slugify from '@sindresorhus/slugify';
+
+	slugify('  Hello   World  ', {
+		preprocess: string => string.trim().replaceAll(/\s+/g, ' ')
+	});
+	//=> 'hello-world'
+	```
+	*/
+	readonly preprocess?: TransformHook | readonly TransformHook[];
+
+	/**
+	Transform the final slug after everything else has run.
+
+	Accepts a single function or an array of functions, which are applied in order. Each function receives the string produced by the previous one and must return a string.
+
+	The hooks run on the finished slug, after `separator` collapsing, `preserveLeadingUnderscore`, and `preserveTrailingDash`. They also run when the slug is empty, so they can be used to provide a fallback.
+
+	@default []
+
+	@example
+	```
+	import slugify from '@sindresorhus/slugify';
+
+	slugify('🔥🔥🔥', {
+		postprocess: slug => slug || 'untitled'
+	});
+	//=> 'untitled'
+	```
+	*/
+	readonly postprocess?: TransformHook | readonly TransformHook[];
+
+	/**
 	@default '-'
 
 	@example
@@ -138,6 +180,8 @@ export type Options = {
 
 	It cannot contain the `separator`.
 
+	Preserved characters pass through the whole pipeline exactly as they are: they are not transliterated, not rewritten by `customReplacements`, not decamelized, and not lowercased. They act as opaque atoms, so they also do not take part in decamelize word boundaries.
+
 	The apostrophe in a word-final `'s` or `'t` is still dropped, even if you preserve `'`.
 
 	For example, if you want to slugify URLs, but preserve the HTML fragment `#` character, you could set `preserveCharacters: ['#']`.
@@ -196,9 +240,25 @@ export type Options = {
 };
 
 /**
+A function that transforms a string at a specific point in the slugification pipeline. See the `preprocess` and `postprocess` options.
+*/
+export type TransformHook = (string: string) => string;
+
+/**
 Slugify a string.
 
 @param string - String to slugify.
+
+The transformation pipeline runs in a fixed order, so composing options is unambiguous:
+
+1. `preprocess` hooks, in array order.
+2. `preserveCharacters` masking. Preserved characters are protected from every later step except contraction collapsing and are restored before the slug is assembled.
+3. `customReplacements`, which override the built-in replacements and the transliteration map on matching keys.
+4. Transliteration (unless `transliterate` is `false`).
+5. `decamelize`, `lowercase`, and contraction collapsing.
+6. Disallowed characters are replaced by `separator` and moot separators are removed.
+7. `preserveLeadingUnderscore` and `preserveTrailingDash`.
+8. `postprocess` hooks, in array order.
 
 @example
 ```
